@@ -1,1 +1,12 @@
-8790029047:AAHOe63oFH9JgIRyXY1s5bRpLrwZxCOB7Eo
+REMOVED: exposed Telegram bot token
+
+The file previously contained a Telegram bot token and was committed inadvertently. The sensitive value has been removed from this file.
+
+Important next steps:
+1) Rotate the Telegram bot token in BotFather immediately.
+2) Add the new token to your SecretStore (e.g. TELEGRAM_BOT_TOKEN) — do NOT commit tokens to the repository.
+3) To fully remove the token from repository history, use git filter-repo or the BFG Repo Cleaner:
+   - git filter-repo --path Codesari --invert-paths  # example (backup first)
+   - or use BFG to remove the token pattern
+
+If you would like, I can provide exact commands to purge history and rotate the token.
