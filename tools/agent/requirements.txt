@@ -1,0 +1,4 @@
+# requirements for the agent runner
+# Keep minimal by default. Add packages as you extend the agent (LLM clients, network libs, etc.)
+
+
