@@ -1,0 +1,2 @@
+# Ignore local config with secrets
+config/telegram_secret.env
