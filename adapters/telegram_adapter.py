@@ -5,10 +5,12 @@ from typing import Optional, Set
 
 from core.service import BaseService
 from core.provider_manager import ProviderManager
+from core.secret_store import SecretStore, SecretNotFoundError
 
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-ALLOWED_USERS: Set[int] = set(
+# Environment-backed defaults; can be overridden by secret_store at start
+TELEGRAM_TOKEN_ENV = os.getenv("TELEGRAM_TOKEN")
+ALLOWED_USERS_ENV = set(
     int(x) for x in os.getenv("TELEGRAM_ALLOWED_USERS", "").split(",") if x.strip()
 )
 POLL_INTERVAL = float(os.getenv("TELEGRAM_POLL_INTERVAL", "1.0"))
@@ -23,24 +25,55 @@ class TelegramAdapter(BaseService):
     - For each incoming text message, forwards the text to ProviderManager.request()
       and sends the provider response back to the chat.
 
+    Token resolution order:
+    1) Environment variable TELEGRAM_TOKEN
+    2) SecretStore.get_secret("TELEGRAM_TOKEN") if a SecretStore instance is provided
+
     Notes:
-    - TELEGRAM_TOKEN environment variable is required.
-    - If TELEGRAM_ALLOWED_USERS is set (comma-separated user ids), only these users
-      will be served.
-    - This adapter deliberately keeps logic minimal so it can be adapted to
-      project-specific message routing or richer chat state management.
+    - TELEGRAM_ALLOWED_USERS may come from env (TELEGRAM_ALLOWED_USERS) or from
+      secret store key TELEGRAM_ALLOWED_USERS (comma-separated user ids).
     """
 
-    def __init__(self, provider_manager: ProviderManager, *, name: str = "telegram-adapter"):
+    def __init__(
+        self,
+        provider_manager: ProviderManager,
+        *,
+        name: str = "telegram-adapter",
+        secret_store: Optional[SecretStore] = None,
+    ):
         # BaseService is a dataclass; call its initializer with name/version.
-        super().__init__(name=name, version="0.1.0")
+        super().__init__(name=name, version="0.1.1")
         self._pm = provider_manager
         self._task: Optional[asyncio.Task] = None
         self._offset: Optional[int] = None
-        if not TELEGRAM_TOKEN:
-            raise RuntimeError("TELEGRAM_TOKEN is required for TelegramAdapter")
+        self._secret_store = secret_store
+        # runtime-populated fields
+        self._token: Optional[str] = TELEGRAM_TOKEN_ENV
+        self._allowed_users: Set[int] = set(ALLOWED_USERS_ENV)
 
     async def start(self) -> None:
+        # Attempt to resolve token from secret store if not present in env
+        if not self._token and self._secret_store:
+            try:
+                val = await self._secret_store.get_secret("TELEGRAM_TOKEN")
+                if val:
+                    self._token = val
+            except SecretNotFoundError:
+                # leave token None for later error
+                pass
+
+        # Resolve allowed users from secret store if env is empty
+        if not self._allowed_users and self._secret_store:
+            try:
+                val = await self._secret_store.get_secret("TELEGRAM_ALLOWED_USERS")
+                if val:
+                    self._allowed_users = set(int(x) for x in val.split(",") if x.strip())
+            except SecretNotFoundError:
+                pass
+
+        if not self._token:
+            raise RuntimeError("TELEGRAM_TOKEN is required for TelegramAdapter (env or secret store)")
+
         await super().start()
         if self._task and not self._task.done():
             return
@@ -56,7 +89,7 @@ class TelegramAdapter(BaseService):
         await super().stop()
 
     async def _poll_loop(self) -> None:
-        base = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+        base = f"https://api.telegram.org/bot{self._token}"
         async with httpx.AsyncClient(timeout=30.0) as client:
             while True:
                 try:
@@ -76,7 +109,7 @@ class TelegramAdapter(BaseService):
                         if not msg or "text" not in msg:
                             continue
                         from_id = msg["from"]["id"]
-                        if ALLOWED_USERS and from_id not in ALLOWED_USERS:
+                        if self._allowed_users and from_id not in self._allowed_users:
                             # optionally: notify user they are not allowed
                             continue
                         text = msg["text"]

@@ -1,14 +1,26 @@
 # Telegram adapter for AIOS-Core
 
-This document describes the minimal Telegram adapter added in feature/telegram-adapter.
+This document describes the Telegram adapter added in feature/telegram-adapter.
 
 What was added
 - adapters/telegram_adapter.py — an async BaseService that long-polls Telegram
   for updates, forwards incoming text messages to ProviderManager.request(), and
   sends back the provider response.
 
+Token resolution
+- The adapter now supports resolving the telegram token and optional allowed users
+  from either environment variables or the project's SecretStore implementation.
+
+Resolution order for TELEGRAM_TOKEN:
+1) Environment variable TELEGRAM_TOKEN
+2) SecretStore.get_secret("TELEGRAM_TOKEN") if a SecretStore instance is provided
+
+Resolution order for TELEGRAM_ALLOWED_USERS:
+1) Environment variable TELEGRAM_ALLOWED_USERS (comma-separated user ids)
+2) SecretStore.get_secret("TELEGRAM_ALLOWED_USERS") if present
+
 Environment variables
-- TELEGRAM_TOKEN (required) — Bot token from BotFather.
+- TELEGRAM_TOKEN (may be provided via env or secret store) — Bot token from BotFather.
 - TELEGRAM_ALLOWED_USERS (optional) — comma-separated Telegram user IDs allowed to use the bot. If empty, the bot will accept messages from any user.
 - TELEGRAM_POLL_INTERVAL (optional) — polling loop delay in seconds (default 1.0).
 - TELEGRAM_MAX_RESPONSE_CHARS (optional) — maximum characters to send in reply (default 4000).
@@ -21,11 +33,12 @@ How to use
    pip install -r requirements.txt
    ```
 
-2. Set environment variables (example):
-   ```bash
-   export TELEGRAM_TOKEN="123456:ABC-DEF..."
-   export TELEGRAM_ALLOWED_USERS="123456789,987654321"
-   ```
+2. Provide token via SecretStore or env:
+   - Using environment variable (quick test):
+     ```bash
+     export TELEGRAM_TOKEN="123456:ABC-DEF..."
+     ```
+   - Using SecretStore implementation: store TELEGRAM_TOKEN in your secret store under the key TELEGRAM_TOKEN and pass the SecretStore instance to TelegramAdapter().
 
 3. Instantiate and start the adapter from your service entrypoint. Minimal example:
 
@@ -33,12 +46,17 @@ How to use
 import asyncio
 from core.provider_manager import ProviderManager
 from adapters.telegram_adapter import TelegramAdapter
+from core.secret_store import SecretStore
 
 async def main():
     pm = ProviderManager()
     # register your AI providers with pm here...
 
-    tg = TelegramAdapter(pm)
+    # If you have a SecretStore implementation, create it and pass here:
+    # secret_store = MySecretStore(...)
+    secret_store = None
+
+    tg = TelegramAdapter(pm, secret_store=secret_store)
     await tg.start()
     try:
         # keep running until cancelled
@@ -51,11 +69,11 @@ if __name__ == "__main__":
 ```
 
 Notes & next steps
-- This is a minimal, opinionated adapter intended to be a starting point. You may want to:
-  - Integrate adapter lifecycle into an existing service manager in the project.
-  - Add message routing / session management for multi-step conversations.
-  - Replace polling with webhooks if you have a public HTTPS endpoint.
+- This adapter is minimal. Consider:
+  - Integrating adapter lifecycle into an existing ConnectionManager.
+  - Adding message routing, session management for multi-step flows.
+  - Replacing polling with webhooks if you have a public HTTPS endpoint.
 
 Security
 - Keep TELEGRAM_TOKEN secret; do not commit it to the repo.
-- Use TELEGRAM_ALLOWED_USERS to restrict who can trigger the bot actions.
+- Use TELEGRAM_ALLOWED_USERS to restrict who can trigger bot actions.
