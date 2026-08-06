@@ -1,0 +1,136 @@
+name: Agent — propose changes
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Optional issue number to attach to this run'
+        required: false
+  schedule:
+    - cron: '0 2 * * *'   # ежедневно в 02:00 UTC — настройте как нужно
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  contents: write  # нужно для create-pull-request
+  issues: read
+  pull-requests: write
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Prepare inputs & check issue label (if triggered by issue)
+        id: check_trigger
+        run: |
+          echo "event_name=${GITHUB_EVENT_NAME}"
+          echo "proceed=false" >> $GITHUB_OUTPUT
+          # If triggered by issues event, only proceed when label present
+          if [ "${GITHUB_EVENT_NAME}" = "issues" ]; then
+            ISSUE_NUM=$(jq -r .issue.number "$GITHUB_EVENT_PATH")
+            echo "issue_number=${ISSUE_NUM}" >> $GITHUB_OUTPUT
+            LABELS=$(jq -r '.issue.labels[].name' "$GITHUB_EVENT_PATH" || true)
+            for L in $LABELS; do
+              if [ "$L" = "agent-run" ] || [ "$L" = "agent-propose" ]; then
+                echo "proceed=true" >> $GITHUB_OUTPUT
+                echo "branch_name=auto/agent-issue-${ISSUE_NUM}" >> $GITHUB_OUTPUT
+                exit 0
+              fi
+            done
+            echo "No agent label found; proceed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          # workflow_dispatch or schedule: proceed
+          echo "proceed=true" >> $GITHUB_OUTPUT
+          ts=$(date +%s)
+          echo "branch_name=auto/agent-${ts}" >> $GITHUB_OUTPUT
+
+      - name: Install agent deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tools/agent/requirements.txt
+
+      - name: Run agent (produce changes, do NOT commit)
+        id: run_agent
+        env:
+          BRANCH_NAME: ${{ steps.check_trigger.outputs.branch_name }}
+          ALLOWED_DIRS: src,tests,docs
+        run: |
+          python tools/agent/run_agent.py --branch-name "${BRANCH_NAME}"
+
+      - name: Show git status (for debugging)
+        run: |
+          git status --porcelain || true
+
+      - name: Run linters & tests (capture pass/fail)
+        id: checks
+        run: |
+          set -eo pipefail
+          EXIT_CODE=0
+          # ruff
+          ruff check . || EXIT_CODE=$?
+          # mypy
+          mypy . || EXIT_CODE=$?
+          # pytest
+          pytest -q || EXIT_CODE=$?
+          if [ "$EXIT_CODE" -eq 0 ]; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+
+      - name: Upload logs on failure
+        if: steps.checks.outputs.passed == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-check-logs
+          path: |
+            .pytest_cache || true
+            .coverage || true
+
+      - name: Ensure there are changes to commit
+        id: has_changes
+        run: |
+          # create-pull-request can commit uncommitted changes into a branch.
+          # Check whether there are any changes; if not, exit early.
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Draft Pull Request
+        if: steps.checks.outputs.passed == 'true' && steps.has_changes.outputs.changed == 'true' && steps.check_trigger.outputs.proceed == 'true'
+        uses: peter-evans/create-pull-request@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(agent): proposed changes from autonomous agent"
+          branch: ${{ steps.check_trigger.outputs.branch_name }}
+          base: feature/kernel
+          title: "chore(agent): proposed automated changes"
+          body: |
+            This draft PR was created by the autonomous code agent.
+            CI checks (ruff/mypy/pytest) passed locally before creating this PR.
+          draft: true
+# minimal dependencies (if you extend agent with network/LLM calls, add here)
+# currently agent uses only stdlib and git CLI, so requirements can stay empty
+allowed_dirs:
+  - src
+  - tests
+  - docs
+max_attempts: 3
